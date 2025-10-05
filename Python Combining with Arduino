@@ -1,0 +1,61 @@
+import serial
+import time
+
+# --- 在这里集成你的视觉识别代码 ---
+def run_visual_recognition():
+    """
+    这是一个示例函数。
+    你需要用你自己的视觉识别逻辑来替换它。
+    这个函数应该返回 "authorized" 或 "unauthorized"。
+    """
+    # 模拟一个场景：随机决定授权状态
+    import random
+    if random.random() > 0.5:
+        print("状态：已授权 (Authorized)")
+        return "authorized"
+    else:
+        print("状态：未授权 (Unauthorized)! 发出警报！")
+        return "unauthorized"
+
+# --- 串行通信设置 ---
+try:
+    # 建立到Arduino的串行连接
+    # 在Windows上，端口通常是 'COM3', 'COM4' 等
+    # 在macOS或Linux上，端口通常是 '/dev/tty.usbmodemXXXX' 或 '/dev/ttyACM0'
+    # 你可以在Arduino IDE的 "工具" -> "端口" 中找到正确的端口号
+    arduino_port = 'COM3' # <--- 修改为你的Arduino端口
+    baud_rate = 9600
+    
+    # 创建Serial对象
+    arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+    
+    # 等待2秒钟，以确保连接稳定
+    time.sleep(2)
+    print(f"成功连接到Arduino，端口：{arduino_port}")
+
+except Exception as e:
+    print(f"连接到Arduino失败: {e}")
+    exit()
+
+# --- 主循环 ---
+try:
+    while True:
+        # 运行你的视觉识别逻辑
+        status = run_visual_recognition()
+
+        # 根据识别结果发送信号
+        if status == "unauthorized":
+            # 发送 'U' 到Arduino
+            arduino.write(b'U')
+        elif status == "authorized":
+            # 发送 'A' 到Arduino
+            arduino.write(b'A')
+
+        # 等待一段时间再进行下一次识别
+        time.sleep(3) # 每3秒检查一次
+
+except KeyboardInterrupt:
+    print("\n程序终止。")
+    # 关闭蜂鸣器并关闭串口连接
+    arduino.write(b'A')
+    arduino.close()
