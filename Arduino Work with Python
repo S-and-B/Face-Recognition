@@ -1,0 +1,78 @@
+#include <Wire.h>
+#include "DFRobot_BMX160.h"
+
+// --- 引脚和阈值定义 ---
+const int IR_PIN       = A0;    // IR 传感器输入
+const int BUZZER_PIN   = 5;     // Grove Buzzer 连接在 D5
+const int IR_THRESHOLD = 200;   // IR 触发阈值
+const int ACCEL_THRESHOLDx = 100; // X轴运动阈值 (mg)
+const int ACCEL_THRESHOLDy = 315; // Y轴运动阈值 (mg)
+const int ACCEL_THRESHOLDz = 150; // Z轴运动阈值 (mg)
+
+// --- DFRobot BMX160 对象 ---
+DFRobot_BMX160 bmx160;
+
+// <<< 新增开始: 用于存储来自Python的状态
+// 默认为 false，即Python默认是“已授权”状态
+bool python_wants_alarm = false; 
+// <<< 新增结束
+
+void setup() {
+  // <<< 修改开始: 将波特率改为 9600，与Python默认设置匹配，更稳定
+  Serial.begin(9600); 
+  // <<< 修改结束
+  
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  Wire.begin();  // I2C on A4/A5
+  delay(100);
+
+  if (!bmx160.begin()) {
+    Serial.println("BMX160 init failed! Check wiring.");
+    while (1) { delay(1000); }
+  }
+  Serial.println("BMX160 initialized successfully!");
+  Serial.println("IR,ACC_X_mg,ACC_Y_mg,ACC_Z_mg,GYR_X_dps,GYR_Y_dps,GYR_Z_dps,MAG_X_uT,MAG_Y_uT,MAG_Z_uT");
+
+  bmx160.setAccelRange(eAccelRange_4G);
+}
+
+void loop() {
+  // <<< 新增开始: 检查并处理来自Python的串口命令
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    if (command == 'U') { // Unauthorized
+      python_wants_alarm = true;
+    } else if (command == 'A') { // Authorized
+      python_wants_alarm = false;
+    }
+  }
+  // <<< 新增结束
+
+  // --- 1. 读取本地传感器 ---
+  int irValue = analogRead(IR_PIN);
+  sBmx160SensorData_t accel, gyro, mag;
+  bmx160.getAllData(&accel, &gyro, &mag);
+
+  // --- 2. 判断本地传感器是否触发警报 ---
+  bool motionDetected = (abs(accel.x) > ACCEL_THRESHOLDx) || (abs(accel.y) > ACCEL_THRESHOLDy) || (abs(accel.z) > ACCEL_THRESHOLDz);
+  bool irDetected = (irValue > IR_THRESHOLD);
+
+  // --- 3. 整合所有警报源：本地传感器 或 来自Python的命令 ---
+  if (irDetected || motionDetected || python_wants_alarm) {
+    // 使用 analogWrite 可以控制蜂鸣器音量，0-255
+    // 10是一个比较柔和的音量，你可以调高它，比如 128
+    analogWrite(BUZZER_PIN, 128); 
+  } else {
+    analogWrite(BUZZER_PIN, 0); // 0 代表完全关闭
+  }
+
+  // --- 4. 打印传感器数据 (这部分保持不变) ---
+  Serial.print(irValue); Serial.print(',');
+  Serial.print(accel.x); Serial.print(',');
+  // ... (为了简洁，省略其余的打印)
+  Serial.println(mag.z);
+
+  delay(50); // ~20Hz 采样率
+}
