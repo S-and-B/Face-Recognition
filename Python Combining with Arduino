@@ -1,61 +1,130 @@
-import serial
-import time
+# =========================================================================
+#
+#   这是一个用于实时目标检测的 Python 脚本 (已适配 Windows)
+#   默认优先使用索引为 1 的摄像头
+#
+# =========================================================================
 
-# --- 在这里集成你的视觉识别代码 ---
-def run_visual_recognition():
-    """
-    这是一个示例函数。
-    你需要用你自己的视觉识别逻辑来替换它。
-    这个函数应该返回 "authorized" 或 "unauthorized"。
-    """
-    # 模拟一个场景：随机决定授权状态
-    import random
-    if random.random() > 0.5:
-        print("状态：已授权 (Authorized)")
-        return "authorized"
-    else:
-        print("状态：未授权 (Unauthorized)! 发出警报！")
-        return "unauthorized"
+import cv2
+from ultralytics import YOLO
+import math
 
-# --- 串行通信设置 ---
-try:
-    # 建立到Arduino的串行连接
-    # 在Windows上，端口通常是 'COM3', 'COM4' 等
-    # 在macOS或Linux上，端口通常是 '/dev/tty.usbmodemXXXX' 或 '/dev/ttyACM0'
-    # 你可以在Arduino IDE的 "工具" -> "端口" 中找到正确的端口号
-    arduino_port = 'COM3' # <--- 修改为你的Arduino端口
-    baud_rate = 9600
+# --- 1. 加载模型 ---
+# 请确保这里的路径是你训练好的 best.pt 文件的真实路径
+# 路径前面的 'r' 是为了防止 Windows 路径的反斜杠 '\' 出错，非常重要！
+yolo = YOLO(r"C:\Users\wangs\Downloads\best.pt")
+
+
+# --- 2. 初始化摄像头 (Windows 适配版) ---
+# 默认优先尝试摄像头 1 (通常是外接USB摄像头)
+print("正在尝试打开摄像头 1...")
+videoCap = cv2.VideoCapture(1)
+
+# 如果摄像头 1 打开失败，则自动尝试摄像头 0 (通常是笔记本内置摄像头)
+if not videoCap.isOpened():
+    print("无法打开摄像头 1, 正在尝试摄像头 0...")
+    videoCap = cv2.VideoCapture(0)
+    # 如果摄像头 0 也失败，则报错退出
+    if not videoCap.isOpened():
+        raise RuntimeError(
+            "无法打开任何摄像头 (已尝试索引 1 和 0)。\n"
+            "请检查：\n"
+            "1. 摄像头是否被其他程序 (如 Zoom, 腾讯会议) 占用。\n"
+            "2. 摄像头物理连接是否正常。\n"
+            "3. 驱动程序是否正确安装。"
+        )
+
+print("摄像头已成功打开！")
+
+# --- 3. 代码设置 ---
+# 提示: 请将 "your_class_name" 替换为你要追踪的实际类别名称
+# 这个名称必须和你训练时在 data.yaml 中定义的名称完全一致
+target_class = "your_class_name" 
+prev_flask_centre = None
+
+
+# --- 4. 功能函数定义 ---
+# (这部分代码是跨平台的，无需修改)
+
+def get_target_id(result, target_class_name):
+    """根据类别名称获取类别ID"""
+    for class_id, class_name in result.names.items():
+        if class_name == target_class_name:
+            return class_id
+    return None
+
+def box_center(box):
+    """计算检测框的中心点坐标"""
+    x1, y1, x2, y2 = map(int, box.xyxy[0])
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    return cx, cy
+
+def is_moving(result, target_class_name, dist_thresh_px):
+    """判断指定目标是否在移动"""
+    global prev_flask_centre
+    target_id = get_target_id(result, target_class_name)
+    target_found_this_frame = False
     
-    # 创建Serial对象
-    arduino = serial.Serial(arduino_port, baud_rate, timeout=1)
+    if target_id is not None:
+        for box in result.boxes:
+            if int(box.cls[0]) == target_id:
+                target_found_this_frame = True
+                cx, cy = box_center(box)
+
+                if prev_flask_centre is None:
+                    prev_flask_centre = (cx, cy)
+                    return False
+                
+                dist = math.hypot(cx - prev_flask_centre[0], cy - prev_flask_centre[1])
+                prev_flask_centre = (cx, cy)
+                return dist > dist_thresh_px
     
-    # 等待2秒钟，以确保连接稳定
-    time.sleep(2)
-    print(f"成功连接到Arduino，端口：{arduino_port}")
+    if not target_found_this_frame:
+        prev_flask_centre = None
+    
+    return False
 
-except Exception as e:
-    print(f"连接到Arduino失败: {e}")
-    exit()
 
-# --- 主循环 ---
-try:
-    while True:
-        # 运行你的视觉识别逻辑
-        status = run_visual_recognition()
+# --- 5. 主循环 ---
+while True:
+    # 从摄像头读取一帧画面
+    ret, frame = videoCap.read()
+    if not ret:
+        print("无法读取视频帧，退出...")
+        break
+        
+    # 使用 YOLO 模型进行追踪检测
+    results = yolo.track(frame, stream=True, persist=True)
 
-        # 根据识别结果发送信号
-        if status == "unauthorized":
-            # 发送 'U' 到Arduino
-            arduino.write(b'U')
-        elif status == "authorized":
-            # 发送 'A' 到Arduino
-            arduino.write(b'A')
+    # 处理检测结果
+    for result in results:
+        classes_names = result.names
+        for box in result.boxes:
+            # 只显示置信度大于 0.4 的结果
+            if box.conf[0] > 0.4:
+                # 获取坐标和类别信息
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cls = int(box.cls[0])
+                class_name = classes_names[cls]
+                
+                # 绘制矩形框
+                colour = (0, 255, 0) # 绿色
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
 
-        # 等待一段时间再进行下一次识别
-        time.sleep(3) # 每3秒检查一次
+                # 在框上方显示类别名称和置信度
+                label = f'{class_name} {box.conf[0]:.2f}'
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, colour, 2)
+    
+    # 显示处理后的图像窗口
+    cv2.imshow('Real-time Detection (Press Q to quit)', frame)
 
-except KeyboardInterrupt:
-    print("\n程序终止。")
-    # 关闭蜂鸣器并关闭串口连接
-    arduino.write(b'A')
-    arduino.close()
+    # 检测键盘输入，如果按下 'q' 键则退出循环
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("检测到 'q' 键，正在关闭程序...")
+        break
+
+# --- 6. 释放资源 ---
+print("释放摄像头资源并关闭所有窗口。")
+videoCap.release()
+cv2.destroyAllWindows()
